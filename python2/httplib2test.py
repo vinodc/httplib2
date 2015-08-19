@@ -26,6 +26,7 @@ import sys
 import time
 import unittest
 import urlparse
+import multiprocessing
 
 try:
     import ssl
@@ -573,15 +574,15 @@ class HttpTest(unittest.TestCase):
             (response, content) = http.request("https://bitworking.org", "GET")
         except:
             pass
-        self.assertEqual(http.connections["https:bitworking.org"].key_file, "akeyfile")
-        self.assertEqual(http.connections["https:bitworking.org"].cert_file, "acertfile")
+        self.assertEqual(http.connections["https:bitworking.org"][0].key_file, "akeyfile")
+        self.assertEqual(http.connections["https:bitworking.org"][0].cert_file, "acertfile")
 
         try:
             (response, content) = http.request("https://notthere.bitworking.org", "GET")
         except:
             pass
-        self.assertEqual(http.connections["https:notthere.bitworking.org"].key_file, None)
-        self.assertEqual(http.connections["https:notthere.bitworking.org"].cert_file, None)
+        self.assertEqual(http.connections["https:notthere.bitworking.org"][0].key_file, None)
+        self.assertEqual(http.connections["https:notthere.bitworking.org"][0].cert_file, None)
 
 
 
@@ -1221,11 +1222,13 @@ class HttpTest(unittest.TestCase):
     def testConnectionClose(self):
         uri = "http://www.google.com/"
         (response, content) = self.http.request(uri, "GET")
-        for c in self.http.connections.values():
-            self.assertNotEqual(None, c.sock)
+        for c_list in self.http.connections.values():
+            for c in c_list:
+                self.assertNotEqual(None, c.sock)
         (response, content) = self.http.request(uri, "GET", headers={"connection": "close"})
-        for c in self.http.connections.values():
-            self.assertEqual(None, c.sock)
+        for c_list in self.http.connections.values():
+            for c in c_list:
+                self.assertEqual(None, c.sock)
 
     def testPickleHttp(self):
         pickled_http = pickle.dumps(self.http)
@@ -1653,6 +1656,67 @@ class HttpPrivateTest(unittest.TestCase):
         end2end = httplib2._get_end2end_headers(response)
         self.assertEquals(0, len(end2end))
 
+
+# Global to allow multiprocessing module to access it
+thread_http = None
+
+def _test_threads_target(uri):
+    try:
+        (response, content) = thread_http.request(uri)
+        status = response.status
+    except socket.timeout:
+        status = 408
+    return status
+
+class TestThreads(unittest.TestCase):
+    def setUp(self):
+        # Re-initialize the thread_http object.
+        global thread_http
+        thread_http = httplib2.Http(
+            disable_ssl_certificate_validation=True,
+            timeout=2,
+        )
+
+    def _test_pool(self, pool):
+        uri = urlparse.urljoin(base, "timeout/timeout.cgi")
+        timeout_results = [
+            pool.apply_async(_test_threads_target, [uri])
+            for i in range(0, 5)]
+
+        uri = "http://www.google.com"
+        ok_results = [
+            pool.apply_async(_test_threads_target, [uri])
+            for i in range(0, 10)]
+
+        for r in ok_results:
+            status  = r.get()
+            self.assertEqual(status, 200)
+
+        for r in timeout_results:
+            status = r.get()
+            self.assertEqual(status, 408)
+
+    def test_pool(self):
+        pool = multiprocessing.Pool(processes=10)
+        self._test_pool(pool)
+
+    def test_threads(self):
+        pool = multiprocessing.pool.ThreadPool(processes=10)
+        self._test_pool(pool)
+
+    def test_gevent(self):
+        try:
+            import gevent.pool
+            from gevent import monkey; monkey.patch_socket()
+        except:
+            # Don't test if gevent doesn't exist.
+            return
+        pool = gevent.pool.Pool(size=10)
+        try:
+            self._test_pool(pool)
+        finally:
+            # unpatch
+            reload(socket)
 
 class TestProxyInfo(unittest.TestCase):
     def setUp(self):
