@@ -5,7 +5,7 @@ except ImportError:
 import sys
 
 pkgdir = {'': 'python%s' % sys.version_info[0]}
-VERSION = '0.9.1a'
+VERSION = '0.9.2a0'
 
 setup(name='httplib2',
         version=VERSION,
